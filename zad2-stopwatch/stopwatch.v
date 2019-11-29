@@ -217,27 +217,20 @@ always @(posedge clk) begin
 end
 
 // segment
-genvar i;
-generate
-    for (i = 0; i < 4; i = i + 1) begin: gen_seg
-        always @(posedge clk) begin
-            if (digit_idx == i) begin
-                case (buf_num[i*4+3:i*4])
-                0: seg <= 7'h40;
-                1: seg <= 7'h79;
-                2: seg <= 7'h24;
-                3: seg <= 7'h30;
-                4: seg <= 7'h19;
-                5: seg <= 7'h12;
-                6: seg <= 7'h02;
-                7: seg <= 7'h78;
-                8: seg <= 7'h00;
-                9: seg <= 7'h10;
-                endcase
-            end else seg <= 7'hzz;
-        end
-    end
-endgenerate
+always @(posedge clk) begin
+    case (buf_num[{digit_idx, 2'b11}-:4])
+    0: seg <= 7'h40;
+    1: seg <= 7'h79;
+    2: seg <= 7'h24;
+    3: seg <= 7'h30;
+    4: seg <= 7'h19;
+    5: seg <= 7'h12;
+    6: seg <= 7'h02;
+    7: seg <= 7'h78;
+    8: seg <= 7'h00;
+    9: seg <= 7'h10;
+    endcase
+end
 
 // anode
 always @(posedge clk) begin
