@@ -25,10 +25,8 @@ localparam CMD_SWP = 3'b111;
 localparam MAX_ELEM_CNT = 512;
 
 localparam STATE_IDLE = 0;
-localparam STATE_CALC = 1;
-localparam STATE_MEM_WAIT = 2;
-localparam STATE_MEM_WAIT2 = 3;
-localparam STATE_WAIT_NO_INPUT = 4;
+localparam STATE_WAIT_DIV = 1;
+localparam STATE_WAIT_NO_INPUT = 2;
 
 localparam ST_NO_MOV = 0;
 localparam ST_MOV_UP = 1;
@@ -40,7 +38,7 @@ sync_input #(.BITS(4)) btn_sync(.clk(clk), .in(btn_raw), .out(btn));
 sync_input #(.BITS(8)) sw_sync(.clk(clk), .in(sw_raw), .out(sw));
 
 reg err_flag;
-reg [2:0] state;
+reg [2:0] state; // todo less bits
 
 reg st_en;
 reg st_reset;
@@ -49,7 +47,14 @@ reg [31:0] st_write_elems [0:1];
 reg [1:0] st_top_mov;
 wire [9:0] st_elems_cnt;
 wire [31:0] st_top [0:1];
-wire st_ready;
+
+reg div_en;
+reg [31:0] div_dividend;
+reg [31:0] div_divisor;
+wire div_done;
+wire [31:0] div_quotient;
+wire [31:0] div_remainder;
+reg waiting_quot;
 
 stack stack_mem(
     .clk(clk),
@@ -61,8 +66,7 @@ stack stack_mem(
     .top_mov(st_top_mov),
     .elems_cnt(st_elems_cnt),
     .top0(st_top[0]),
-    .top1(st_top[1]),
-    .ready(st_ready)
+    .top1(st_top[1])
     );
 
 display_7seg disp(
@@ -73,82 +77,123 @@ display_7seg disp(
     .seg(seg)
     );
 
+division div(
+    .clk(clk),
+    .en(div_en),
+    .dividend(div_dividend),
+    .divisor(div_divisor),
+    .done(div_done),
+    .quotient(div_quotient),
+    .remainder(div_remainder)
+    );
+
 initial begin
     err_flag <= 0;
     state <= STATE_IDLE;
+    st_en <= 0;
+    st_reset <= 0;
+    div_en <= 0;
 end
 
 assign led = {err_flag, st_elems_cnt[6:0]};
 
-// todo the whole logic...
 always @(posedge clk) begin
     st_en <= 0;
     st_reset <= 0;
+    div_en <= 0;
     case(state)
     STATE_IDLE: begin
         if (btn != 0) begin
             state <= STATE_WAIT_NO_INPUT; // might get overwritten
         end
+        err_flag <= 1; // might get overwritten
         case(btn)
-        BTN_PUSH: begin
-            if (st_elems_cnt == MAX_ELEM_CNT) begin
-                err_flag <= 1;
-            end else begin
-                st_en <= 1;
-                st_write_elems_cnt <= 1;
-                st_write_elems[0] <= {24'h0, sw[7:0]};
-                st_top_mov <= ST_MOV_UP;
-                state <= STATE_MEM_WAIT;
-            end
+        BTN_PUSH: if (st_elems_cnt < MAX_ELEM_CNT) begin
+            st_en <= 1;
+            st_write_elems_cnt <= 1;
+            st_write_elems[0] <= {24'h0, sw[7:0]};
+            st_top_mov <= ST_MOV_UP;
+            err_flag <= 0;
         end
-        BTN_EXTEND: begin
+        BTN_EXTEND: if (st_elems_cnt > 0) begin
             st_en <= 1;
             st_write_elems_cnt <= 1;
             st_write_elems[0] <= {st_top[0][23:0], sw[7:0]};
             st_top_mov <= ST_NO_MOV;
-            state <= STATE_MEM_WAIT;
+            err_flag <= 0;
         end
-        BTN_EXEC: begin
-            // todo
-            case(sw[2:0])
-            CMD_ADD: begin
+        BTN_EXEC: case(sw[2:0])
+            CMD_ADD: if (st_elems_cnt >= 2) begin
+                st_en <= 1;
+                st_write_elems_cnt <= 1;
+                st_write_elems[0] <= st_top[1] + st_top[0];
+                st_top_mov <= ST_MOV_DN;
+                err_flag <= 0;
             end
-            CMD_SUB: begin
+            CMD_SUB: if (st_elems_cnt >= 2) begin
+                st_en <= 1;
+                st_write_elems_cnt <= 1;
+                st_write_elems[0] <= st_top[1] - st_top[0];
+                st_top_mov <= ST_MOV_DN;
+                err_flag <= 0;
             end
-            CMD_MUL: begin
+            CMD_MUL: if (st_elems_cnt >= 2) begin
+                st_en <= 1;
+                st_write_elems_cnt <= 1;
+                st_write_elems[0] <= st_top[1] * st_top[0]; // mul is super slow :O
+                st_top_mov <= ST_MOV_DN;
+                err_flag <= 0;
             end
-            CMD_DIV: begin
+            CMD_DIV, CMD_MOD: if (st_elems_cnt >= 2 && st_top[0] != 0) begin
+                div_en <= 1;
+                div_dividend <= st_top[1];
+                div_divisor <= st_top[0];
+                waiting_quot <= sw[2:0] == CMD_DIV;
+                err_flag <= 0;
+                state <= STATE_WAIT_DIV;
             end
-            CMD_MOD: begin
+            CMD_POP: if (st_elems_cnt > 0) begin
+                st_en <= 1;
+                st_write_elems_cnt <= 0;
+                st_top_mov <= ST_MOV_DN;
+                err_flag <= 0;
             end
-            CMD_POP: begin
+            CMD_DUP: if (st_elems_cnt > 0 && st_elems_cnt < MAX_ELEM_CNT) begin
+                st_en <= 1;
+                st_write_elems_cnt <= 1;
+                st_write_elems[0] <= st_top[0];
+                st_top_mov <= ST_MOV_UP;
+                err_flag <= 0;
             end
-            CMD_DUP: begin
+            CMD_SWP: if (st_elems_cnt >= 2) begin
+                st_en <= 1;
+                st_write_elems_cnt <= 2;
+                st_write_elems[0] <= st_top[1];
+                st_write_elems[1] <= st_top[0];
+                st_top_mov <= ST_NO_MOV;
+                err_flag <= 0;
             end
-            CMD_SWP: begin
-            end
-            endcase
-        end
+        endcase
         BTN_RESET: begin
             st_reset <= 1;
             err_flag <= 0;
-            state <= STATE_MEM_WAIT;
+        end
+        default: begin
+            err_flag <= err_flag; // overwrite setting it to the error
         end
         endcase
     end
-    STATE_CALC: begin
-        // doing calc? (todo)
-    end
-    STATE_MEM_WAIT: begin
-        // memory works now and sets st_ready in next tick
-        state <= STATE_MEM_WAIT2;
-    end
-    STATE_MEM_WAIT2: begin
-        if (st_ready) begin
+    STATE_WAIT_DIV: begin
+        if (div_done) begin
+            st_en <= 1;
+            st_write_elems_cnt <= 1;
+            st_write_elems[0] <= waiting_quot ? div_quotient : div_remainder;
+            st_top_mov <= ST_MOV_DN;
             state <= STATE_WAIT_NO_INPUT;
         end
     end
     STATE_WAIT_NO_INPUT: begin
+        // also waits for memory to stabilize/propagate top{0-2}
         if (btn == 0 || btn == BTN_RESET) begin
             state <= STATE_IDLE;
         end
@@ -172,83 +217,95 @@ module stack(
     input wire [1:0] top_mov,
     output reg [9:0] elems_cnt,
     output reg [31:0] top0,
-    output reg [31:0] top1,
-    output reg ready
+    output reg [31:0] top1
     );
 
 localparam ST_NO_MOV = 0;
 localparam ST_MOV_UP = 1;
 localparam ST_MOV_DN = 2;
 
+// top0 and top1 are kept in the registers instead of in the memory
 reg [31:0] mem [0:511];
-reg [9:0] tmp_write_idx;
-reg [31:0] tmp_write_elem;
-reg tmp_do_write;
+reg [31:0] top2;
 
 initial begin
     elems_cnt <= 0;
-    ready <= 1;
 end
 
 always @(posedge clk) begin
-    ready <= 1; // might be changed
+    // always read top2, so it's prepared;
+    // note that the elems_cnt has intended value: main module waits for the buttons to be released
+    top2 <= mem[elems_cnt - 3];
     if (reset) begin
         elems_cnt <= 0;
-    end else begin
-        tmp_do_write = 0;
-        if (!ready) begin // two writes only if swapping two top elements
-            // mem[elems_cnt - 2] <= top1;
-            tmp_do_write = 1;
-            tmp_write_idx = elems_cnt - 2;
-            tmp_write_elem = top1;
-        end else if (en) begin
-            case(top_mov)
-            ST_NO_MOV: begin
-                if (write_elems_cnt >= 1) begin // should be always
-                    // mem[elems_cnt - 1] <= write_elem0;
-                    tmp_do_write = 1;
-                    tmp_write_idx = elems_cnt - 1;
-                    tmp_write_elem = write_elem0;
-                    top0 <= write_elem0;
-                end
-                if (write_elems_cnt == 2) begin
-                    ready <= 0;
-                    top1 <= write_elem1;
-                end
+    end else if (en) begin
+        case(top_mov)
+        ST_NO_MOV: begin
+            // always writing at least one element
+            top0 <= write_elem0;
+            if (write_elems_cnt == 2) begin
+                top1 <= write_elem1;
             end
-            ST_MOV_UP: begin
-                // always writing exactly one element
-                elems_cnt <= elems_cnt + 1;
-                // mem[elems_cnt] <= write_elem0;
-                tmp_do_write = 1;
-                tmp_write_idx = elems_cnt;
-                tmp_write_elem = write_elem0;
-                top0 <= write_elem0;
-                top1 <= top0;
-            end
-            ST_MOV_DN: begin
-                elems_cnt <= elems_cnt - 1;
-                if (write_elems_cnt > 0) begin // cnt == 1
-                    // mem[elems_cnt - 2] <= write_elem0;
-                    tmp_do_write = 1;
-                    tmp_write_idx = elems_cnt - 2;
-                    tmp_write_elem = write_elem0;
-                    top0 <= write_elem0;
-                end else begin
-                    top0 <= top1;
-                end
-                top1 <= mem[elems_cnt - 3];
-            end
-            endcase
         end
+        ST_MOV_UP: begin
+            // always writing exactly one element
+            elems_cnt <= elems_cnt + 1;
+            top0 <= write_elem0;
+            top1 <= top0;
+            mem[elems_cnt - 2] <= top1;
+        end
+        ST_MOV_DN: begin
+            // writing at most one element
+            elems_cnt <= elems_cnt - 1;
+            top0 <= write_elems_cnt > 0 ? write_elem0 : top1;
+            top1 <= top2;
+        end
+        endcase
+    end
+end
 
-        if (tmp_do_write) begin
-            mem[tmp_write_idx] <= tmp_write_elem;
+endmodule
+
+
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+module division(
+    input wire clk,
+    input wire en,
+    input wire [31:0] dividend,
+    input wire [31:0] divisor,
+    output reg done,
+    output reg [31:0] quotient,
+    output reg [31:0] remainder
+    );
+
+reg [5:0] remaining_bits;
+reg [63:0] div_shifted;
+
+initial begin
+    remaining_bits <= 0;
+end
+
+always @(posedge clk) begin
+    done <= 0;
+    if (remaining_bits == 0 && en && divisor != 0) begin
+        remainder <= dividend;
+        div_shifted <= {divisor, 31'b0};
+        remaining_bits <= 32;
+    end else if (remaining_bits > 0) begin
+        remaining_bits <= remaining_bits - 1;
+        quotient <= (quotient << 1) | (remainder >= div_shifted ? 1 : 0);
+        remainder <= remainder >= div_shifted ? remainder - div_shifted : remainder;
+        div_shifted <= div_shifted >> 1;
+        if (remaining_bits == 1) begin
+            done <= 1;
         end
     end
 end
 
 endmodule
+
 
 //////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////
