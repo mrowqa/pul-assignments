@@ -280,27 +280,59 @@ module division(
     output reg [31:0] remainder
     );
 
-reg [5:0] remaining_bits;
+localparam STATE_IDLE = 42;
+
+reg [5:0] remaining_bits; // kinda state
 reg [63:0] div_shifted;
+reg [1:0] signs;
 
 initial begin
-    remaining_bits <= 0;
+    remaining_bits <= STATE_IDLE;
 end
 
 always @(posedge clk) begin
     done <= 0;
-    if (remaining_bits == 0 && en && divisor != 0) begin
-        remainder <= dividend;
-        div_shifted <= {divisor, 31'b0};
-        remaining_bits <= 32;
+    if (remaining_bits == STATE_IDLE) begin
+        if (en && divisor != 0) begin
+            signs <= {dividend[31], divisor[31]};
+            remainder <= dividend[31] ? (0-dividend) : dividend;
+            div_shifted <= {divisor[31] ? (0-divisor) : divisor, 31'b0};
+            remaining_bits <= 32;
+        end
     end else if (remaining_bits > 0) begin
         remaining_bits <= remaining_bits - 1;
         quotient <= (quotient << 1) | (remainder >= div_shifted ? 1 : 0);
         remainder <= remainder >= div_shifted ? remainder - div_shifted : remainder;
-        div_shifted <= div_shifted >> 1;
-        if (remaining_bits == 1) begin
-            done <= 1;
+        if (remaining_bits > 1) begin
+            div_shifted <= div_shifted >> 1;
         end
+    end else if (remaining_bits == 0) begin
+        remaining_bits <= STATE_IDLE;
+        done <= 1;
+        case(signs)
+        2'b00: begin
+            // nop
+        end
+        2'b01: begin
+            quotient <= (0-quotient);
+        end
+        2'b10: begin
+            if (remainder == 0) begin
+                quotient <= (0-quotient);
+            end else begin
+                quotient <= ((0-quotient) - 1);
+                remainder <= div_shifted - remainder;
+            end
+        end
+        2'b11: begin
+            if (remainder == 0) begin
+                // nop
+            end else begin
+                quotient <= quotient + 1;
+                remainder <= div_shifted - remainder;
+            end
+        end
+        endcase
     end
 end
 
