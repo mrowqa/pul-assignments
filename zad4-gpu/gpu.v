@@ -1,14 +1,11 @@
-// TODO (problems):
-// - screen displays a row in a weird way (a couple of columns)
-// - sometimes epp loses some epp writes (?)
-// - explicite ram?
-
 `default_nettype none
 
 module gpu(
     input wire uclk,
+    // input wire mclk,
     // debug
     output reg [7:0] led,
+    //input wire [0:0] btn,
     // VGA
     output reg hsync,
     output reg vsync,
@@ -24,15 +21,6 @@ module gpu(
 localparam WIDTH = 320;
 localparam HEIGHT = 200;
 
-reg [7:0] frame_buffer [0:7999];
-integer i;
-initial begin
-    for (i=0; i<8000; i=i+1) begin
-        frame_buffer[i] <= 8'h00;
-    end
-    led <= 8'h00;
-end
-
 wire vga_clk;
 wire clk_fb;
 
@@ -43,8 +31,51 @@ DCM_SP #(
     .CLKFX(vga_clk), // pixel clock: 25 MHz
     .CLKIN(uclk),
     .CLK0(clk_fb),
-    .CLKFB(clk_fb)
+    .CLKFB(clk_fb),
+    .RST(0)
 );
+
+// main logic, fwd decl
+localparam STATE_IDLE = 0;
+localparam STATE_BLIT = 1;
+localparam STATE_FILL = 2;
+reg [7:0] state;
+reg start_blit;
+reg start_fill;
+reg fill_color;
+// ---------------------------
+
+
+// frame buffer stuff
+reg [7:0] frame_buffer [0:7999];
+integer i;
+initial begin
+    for (i=0; i<8000; i=i+1) begin
+        frame_buffer[i] <= i;
+    end
+    led <= 0;
+end
+
+reg fb_write;
+reg [7:0] fb_write_data;
+reg [19:3] fb_addr;
+reg [7:0] fb_read_data;
+
+initial begin
+    fb_write <= 0;
+    fb_write_data <= 0;
+    fb_addr <= 0;
+    fb_read_data <= 0;
+end
+
+always @(posedge uclk) begin
+    if (fb_write) begin
+        frame_buffer[fb_addr] <= fb_write_data;
+    end else begin
+        fb_read_data <= frame_buffer[fb_addr];
+    end
+end
+// todo analyze latencies of reads...
 
 
 //////////////////////////////////////////////////////////////////////////////
@@ -107,7 +138,8 @@ always @(posedge vga_clk) begin
     //       there's unhandy workaround:
     //           You must have all the elements of the array in the two-dimensional array
     //           that is read in the sensitivity list.
-    next_color_out = pos_x < H_ACTIVE && pos_y < V_ACTIVE ? frame_buffer[pos_buf[19:3]][pos_buf[2:0]] : 0;
+    next_color_out = pos_x < H_ACTIVE && pos_y < V_ACTIVE ?
+        (frame_buffer[pos_buf >> 3] >> (pos_buf & 3'b111)) : 0;
     rgb <= {8{next_color_out}};
     hsync <= next_hsync;
     vsync <= next_vsync;
@@ -144,7 +176,7 @@ localparam EPP_DATA_STB = 1;
 localparam EPP_STATE_IDLE = 0;
 localparam EPP_STATE_WAIT_FOR_PC = 1;
 
-reg [7:0] epp_regs [0:12];
+reg [7:0] epp_regs [0:11];
 reg [2:0] epp_state;
 reg [3:0] epp_addr;
 
@@ -163,48 +195,96 @@ end
 
 wire [15:0] reg_x1 = {epp_regs[EPP_REG_X1_H], epp_regs[EPP_REG_X1_L]};
 wire [15:0] reg_y1 = {epp_regs[EPP_REG_Y1_H], epp_regs[EPP_REG_Y1_L]};
+wire [15:0] reg_x2 = {epp_regs[EPP_REG_X2_H], epp_regs[EPP_REG_X2_L]};
+wire [15:0] reg_y2 = {epp_regs[EPP_REG_Y2_H], epp_regs[EPP_REG_Y2_L]};
+wire [15:0] op_width = {epp_regs[EPP_REG_OP_WDT_H], epp_regs[EPP_REG_OP_WDT_L]};
+wire [15:0] op_height = {epp_regs[EPP_REG_OP_HGT_H], epp_regs[EPP_REG_OP_HGT_L]};
 
 assign EppDB = epp_state == EPP_STATE_WAIT_FOR_PC && epp_wr_buf == EPP_READ ? epp_data_buf : 8'hzz;
 
-// main logic, fwd decl
-localparam STATE_IDLE = 0;
-localparam STATE_BLIT = 1;
-localparam STATE_FILL = 2;
-reg [7:0] state;
-// ---------------------------
+// sync regs
+reg [7:0] EppDB1;
+reg EppAstb1;
+reg EppDstb1;
+reg EppWR1;
+reg [7:0] EppDB2;
+reg EppAstb2;
+reg EppDstb2;
+reg EppWR2;
+
+// for main logic
+reg [19:3] dst_x; // iterator
+reg [19:0] dst_y;
+reg read_waits;
+
+initial begin
+    state <= STATE_IDLE;
+    start_blit <= 0;
+    start_fill <= 0;
+    fill_color <= 0;
+    read_waits <= 0;
+end
+
+wire [19:3] dst_addr = (dst_y * WIDTH + {dst_x, 3'b000}) >> 3;
+wire [7:0] dst_covered_bits = {
+    (({dst_x, 3'b111} >= reg_x1) && ({dst_x, 3'b111} < (reg_x1 + op_width))),
+    (({dst_x, 3'b110} >= reg_x1) && ({dst_x, 3'b110} < (reg_x1 + op_width))),
+    (({dst_x, 3'b101} >= reg_x1) && ({dst_x, 3'b101} < (reg_x1 + op_width))),
+    (({dst_x, 3'b100} >= reg_x1) && ({dst_x, 3'b100} < (reg_x1 + op_width))),
+    (({dst_x, 3'b011} >= reg_x1) && ({dst_x, 3'b011} < (reg_x1 + op_width))),
+    (({dst_x, 3'b010} >= reg_x1) && ({dst_x, 3'b010} < (reg_x1 + op_width))),
+    (({dst_x, 3'b001} >= reg_x1) && ({dst_x, 3'b001} < (reg_x1 + op_width))),
+    (({dst_x, 3'b000} >= reg_x1) && ({dst_x, 3'b000} < (reg_x1 + op_width)))
+    };
 
 always @(posedge uclk) begin
-    EppWait <= 0;
+    // sync inputs
+    EppDB1 <= EppDB;
+    EppDB2 <= EppDB1;
+    EppAstb1 <= EppAstb;
+    EppAstb2 <= EppAstb1;
+    EppDstb1 <= EppDstb;
+    EppDstb2 <= EppDstb1;
+    EppWR1 <= EppWR;
+    EppWR2 <= EppWR1;
+
+    fb_addr <= (reg_y1 * WIDTH + reg_x1) >> 3;
+    fb_write <= 0;
+    start_blit <= 0;
+    start_fill <= 0;
 
     case (epp_state)
     EPP_STATE_IDLE: begin
-        if (!EppAstb) begin
-            if (EppWR == EPP_WRITE) begin
-                epp_addr <= EppDB;
+        EppWait <= 0;
+        if (!EppAstb2) begin
+            if (EppWR2 == EPP_WRITE) begin
+                epp_addr <= EppDB2;
             end else begin // read
                 epp_data_buf <= epp_addr;
             end
             epp_stb_buf <= EPP_ADDR_STB;
             epp_wr_buf <= EppWR;
             epp_state <= EPP_STATE_WAIT_FOR_PC;
-        end else if (!EppDstb) begin
-            if (EppWR == EPP_WRITE) begin
+        end else if (!EppDstb2) begin
+            if (EppWR2 == EPP_WRITE) begin
                 case (epp_addr)
                 EPP_REG_RUN_BLIT: begin
-                    // todo
+                    start_blit <= 1;
                 end
                 EPP_REG_RUN_FILL: begin
-                    // todo
+                    start_fill <= 1;
+                    fill_color <= EppDB2[0];
                 end
                 EPP_REG_FRM_BUF: begin
                     if (reg_x1[2:0] == 0 && reg_x1 < WIDTH && reg_y1 < HEIGHT && state == STATE_IDLE) begin
-                        frame_buffer[reg_y1 * WIDTH + reg_x1] <= EppDB;
+                        fb_write <= 1;
+                        fb_write_data <= EppDB2;
                         {epp_regs[EPP_REG_X1_H], epp_regs[EPP_REG_X1_L]} <= reg_x1 + 8 >= WIDTH ? 0 : reg_x1 + 8;
                     end
                 end
                 EPP_REG_STATUS: begin end
                 default: begin
-                    epp_regs[epp_addr] <= EppDB;
+                    epp_regs[epp_addr] <= EppDB2;
                 end
                 endcase
             end else begin // EPP_READ
@@ -213,7 +293,7 @@ always @(posedge uclk) begin
                 EPP_REG_RUN_FILL: begin end
                 EPP_REG_FRM_BUF: begin
                     if (reg_x1[2:0] == 0 && reg_x1 < WIDTH && reg_y1 < HEIGHT && state == STATE_IDLE) begin
-                        // epp_data_buf <= frame_buffer[reg_y1 * WIDTH + reg_x1]; // TODO
+                        epp_data_buf <= fb_read_data;
                         {epp_regs[EPP_REG_X1_H], epp_regs[EPP_REG_X1_L]} <= reg_x1 + 8 >= WIDTH ? 0 : reg_x1 + 8;
                     end
                 end
@@ -226,20 +306,69 @@ always @(posedge uclk) begin
                 endcase
             end
             epp_stb_buf <= EPP_DATA_STB;
-            epp_wr_buf <= EppWR;
+            epp_wr_buf <= EppWR2;
             epp_state <= EPP_STATE_WAIT_FOR_PC;
         end
     end
     EPP_STATE_WAIT_FOR_PC: begin
         EppWait <= 1;
-        if (epp_stb_buf == EPP_ADDR_STB && EppAstb ||
-                epp_stb_buf == EPP_DATA_STB && EppDstb) begin
+        if (epp_stb_buf == EPP_ADDR_STB && EppAstb2 ||
+                epp_stb_buf == EPP_DATA_STB && EppDstb2) begin
             epp_state <= EPP_STATE_IDLE;
         end
     end
     default: begin
-        led <= 255;
     end
+    endcase
+
+    ///////////////////////////////////////////////////////
+    /////////////////// Main logic ////////////////////////
+    ///////////////////////////////////////////////////////
+    // single process, so ISE can notice it can use RAM
+
+    read_waits <= 0;
+
+    case (state)
+    STATE_IDLE: begin
+        if (start_blit) begin
+            state <= STATE_BLIT; // todo...
+        end else if (start_fill) begin
+            if (reg_x1 + op_width < WIDTH && reg_y1 + op_height < HEIGHT) begin
+                state <= STATE_FILL;
+                dst_x <= reg_x1 >> 3;
+                dst_y <= reg_y1;
+            end
+        end
+    end
+    STATE_BLIT: begin
+        state <= STATE_IDLE; // todo
+    end
+    STATE_FILL: begin
+        if (dst_y >= reg_y1 + op_height) begin // finished
+            state <= STATE_IDLE;
+        end else begin
+            fb_addr <= dst_addr;
+            if (dst_covered_bits != 8'hff && !read_waits) begin
+                read_waits <= 1;
+            end else begin
+                fb_write <= 1;
+                fb_write_data <= dst_covered_bits; // todo // looks like shift rotate on these masks...
+                    //({8{fill_color}} & dst_covered_bits) |
+                    //(fb_read_data & (~dst_covered_bits));
+
+                // inc pos
+                if ({dst_x + 1, 3'b000} >= reg_x1 + op_width) begin
+                    dst_x <= reg_x1 >> 3;
+                    dst_y <= dst_y + 1;
+                    led <= led + 16;
+                end else begin
+                    dst_x <= dst_x + 1;
+                    led <= led + 1;
+                end
+            end
+        end
+    end
+    default: begin end
     endcase
 end
 
@@ -247,12 +376,6 @@ end
 //////////////////////////////////////////////////////////////////////////////
 ////////////////////       Main logic    /////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////
-
-initial begin
-    state <= STATE_IDLE;
-end
-
-// todo
 
 endmodule
 
