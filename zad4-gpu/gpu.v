@@ -5,7 +5,8 @@ module gpu(
     // input wire mclk,
     // debug
     output reg [7:0] led,
-    //input wire [0:0] btn,
+    input wire [3:0] btn0,
+    input wire [7:0] sw,
     // VGA
     output reg hsync,
     output reg vsync,
@@ -18,9 +19,18 @@ module gpu(
     output reg EppWait
     );
 
+reg [3:0] btn1;
+reg [3:0] btn;
+
+always @(posedge uclk) begin
+    btn1 <= btn0;
+    btn <= btn1;
+end
+
 localparam WIDTH = 320;
 localparam HEIGHT = 200;
 
+`ifndef SIM
 wire vga_clk;
 wire clk_fb;
 
@@ -34,11 +44,13 @@ DCM_SP #(
     .CLKFB(clk_fb),
     .RST(0)
 );
+`endif
 
 // main logic, fwd decl
 localparam STATE_IDLE = 0;
 localparam STATE_BLIT = 1;
 localparam STATE_FILL = 2;
+localparam STATE_FILL_INC_POS = 3;
 reg [7:0] state;
 reg start_blit;
 reg start_fill;
@@ -81,7 +93,7 @@ end
 //////////////////////////////////////////////////////////////////////////////
 ////////////////////       VGA           /////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////
-
+`ifndef SIM
 // http://tinyvga.com/vga-timing/640x400@70Hz
 localparam H_ACTIVE = 640;
 localparam H_FRONT_PORCH = H_ACTIVE + 16;
@@ -144,6 +156,7 @@ always @(posedge vga_clk) begin
     hsync <= next_hsync;
     vsync <= next_vsync;
 end
+`endif
 
 
 //////////////////////////////////////////////////////////////////////////////
@@ -215,7 +228,7 @@ reg EppWR2;
 // for main logic
 reg [19:3] dst_x; // iterator
 reg [19:0] dst_y;
-reg read_waits;
+reg [7:0] read_waits;
 
 initial begin
     state <= STATE_IDLE;
@@ -251,7 +264,9 @@ always @(posedge uclk) begin
     fb_addr <= (reg_y1 * WIDTH + reg_x1) >> 3;
     fb_write <= 0;
     start_blit <= 0;
-    start_fill <= 0;
+    `ifndef SIM
+    start_fill <= 0; // todo fix later
+    `endif
 
     case (epp_state)
     EPP_STATE_IDLE: begin
@@ -328,6 +343,10 @@ always @(posedge uclk) begin
 
     read_waits <= 0;
 
+    if (btn[0]) begin
+        fb_addr <= sw;
+        led <= fb_read_data;
+    end else begin
     case (state)
     STATE_IDLE: begin
         if (start_blit) begin
@@ -348,34 +367,36 @@ always @(posedge uclk) begin
             state <= STATE_IDLE;
         end else begin
             fb_addr <= dst_addr;
-            if (dst_covered_bits != 8'hff && !read_waits) begin
-                read_waits <= 1;
+            if (dst_covered_bits != 8'hff && read_waits < 2) begin
+                read_waits <= read_waits + 1; // waiting until 2: same reason as STATE_FILL_INC_POS
             end else begin
                 fb_write <= 1;
-                fb_write_data <= dst_covered_bits; // todo // looks like shift rotate on these masks...
-                    //({8{fill_color}} & dst_covered_bits) |
-                    //(fb_read_data & (~dst_covered_bits));
-
-                // inc pos
-                if ({dst_x + 1, 3'b000} >= reg_x1 + op_width) begin
-                    dst_x <= reg_x1 >> 3;
-                    dst_y <= dst_y + 1;
-                    led <= led + 16;
-                end else begin
-                    dst_x <= dst_x + 1;
-                    led <= led + 1;
-                end
+                fb_write_data <= 
+                    ({8{fill_color}} & dst_covered_bits) |
+                    (fb_read_data & (~dst_covered_bits));
+                state <= STATE_FILL_INC_POS;
             end
         end
     end
+    STATE_FILL_INC_POS: begin
+        // for some reason it can't happen in STATE_FILL...
+        // it works in simulation, but not on real hardware
+        // (the memory behaves in a weird way)
+        fb_addr <= dst_addr;
+        if ({dst_x + 17'h1, 3'b000} >= reg_x1 + op_width) begin
+            dst_x <= reg_x1 >> 3;
+            dst_y <= dst_y + 1;
+            led <= led + 16;
+        end else begin
+            dst_x <= dst_x + 1;
+            led <= led + 1;
+        end
+        state <= STATE_FILL;
+    end
     default: begin end
     endcase
+    end
 end
-
-
-//////////////////////////////////////////////////////////////////////////////
-////////////////////       Main logic    /////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////
 
 endmodule
 
