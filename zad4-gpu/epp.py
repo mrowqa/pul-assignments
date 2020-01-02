@@ -4,6 +4,7 @@ import argparse
 import usb1
 from adepttool.device import get_devices
 import sys
+from time import sleep
 
 parser = argparse.ArgumentParser(description='Program the FPGA on Basys 2.')
 parser.add_argument('--device', type=int, help='Device index', default=0)
@@ -71,7 +72,7 @@ def fill(x, y, width, height, color):
     port.put_reg(HH, bytes([hh]))
     port.put_reg(FILL, bytes([color]))
 
-def rect_test(spacing):
+def fill_test(spacing):
     edge = 7
     for y in range(10):
         for x in range(10):
@@ -98,4 +99,29 @@ def blit(dst_x, dst_y, src_x, src_y, width, height):
     port.put_reg(HL, bytes([hl]))
     port.put_reg(HH, bytes([hh]))
     port.put_reg(BLIT, bytes([1]))
+
+def blit_test_1():
+    x, y = 42, 42
+    wh = 8
+
+    cmds = ([lambda x, y, wh: (x, y, wh, True)] +
+        [lambda x, y, wh: (x+1, y, wh, False)] * 8 +
+        [lambda x, y, wh: (x, y, wh+1, True)] * 5 +
+        [lambda x, y, wh: (x, y+1, wh, False)] * 10 +
+        [lambda x, y, wh: (x, y, wh-1, True)] * 3 +
+        [lambda x, y, wh: (x-1, y-1, wh, False)] * 40)
+
+    for c in cmds:
+        x, y, wh, refill = c(x, y, wh)
+        if refill:
+            fill(0, 0, 5*8, 5*8, 1)
+            fill((5*8-wh)//2 - 1, (5*8-wh)//2 - 1, wh+2, wh+2, 0)
+        blit((5*8-wh)//2, (5*8-wh)//2, x, y, wh, wh)
+        sleep(0.3)
+
+def blit_test_2():
+    chessboard()
+    blit(10, 10, 11, 10, 10, 10)
+    sleep(3)
+    blit(11, 10, 10, 10, 10, 10)
 
