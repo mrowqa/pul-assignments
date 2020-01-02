@@ -4,9 +4,9 @@ module gpu(
     input wire uclk,
     // input wire mclk,
     // debug
-    output reg [7:0] led,
-    input wire [3:0] btn0,
-    input wire [7:0] sw,
+    // output reg [7:0] led,
+    // input wire [3:0] btn0,
+    // input wire [7:0] sw,
     // VGA
     output reg hsync,
     output reg vsync,
@@ -19,13 +19,13 @@ module gpu(
     output reg EppWait
     );
 
-reg [3:0] btn1;
-reg [3:0] btn;
-
-always @(posedge uclk) begin
-    btn1 <= btn0;
-    btn <= btn1;
-end
+// reg [3:0] btn1;
+// reg [3:0] btn;
+// 
+// always @(posedge uclk) begin
+//     btn1 <= btn0;
+//     btn <= btn1;
+// end
 
 localparam WIDTH = 320;
 localparam HEIGHT = 200;
@@ -66,7 +66,7 @@ initial begin
     for (i=0; i<8000; i=i+1) begin
         frame_buffer[i] <= i;
     end
-    led <= 0;
+    // led <= 0;
 end
 
 reg fb_write;
@@ -88,7 +88,6 @@ always @(posedge uclk) begin
         fb_read_data <= frame_buffer[fb_addr];
     end
 end
-// todo analyze latencies of reads...
 
 
 //////////////////////////////////////////////////////////////////////////////
@@ -285,7 +284,7 @@ always @(posedge uclk) begin
     fb_write <= 0;
     start_blit <= 0;
     `ifndef SIM
-    start_fill <= 0; // todo fix later
+    start_fill <= 0;
     `endif
 
     case (epp_state)
@@ -363,22 +362,6 @@ always @(posedge uclk) begin
 
     read_waits <= 0;
 
-    // if (btn[3]) begin // tmp XXX
-    //     blit_buffer[1] <= 8'h00;
-    //     blit_buffer[2] <= 8'h00;
-    //     blit_buffer[3] <= 8'h00;
-    //     blit_buffer[4] <= 8'h00;
-    //     blit_buffer[5] <= 8'h00;
-    //     blit_buffer[6] <= 8'h00;
-    //     blit_buffer[7] <= 8'h00;
-    //     blit_buffer[8] <= 8'h00;
-    //     blit_buffer[9] <= 8'h00;
-    // end
-
-    /*if (btn[0]) begin // tmp XXX
-        fb_addr <= sw;
-        led <= btn[1] ? blit_buffer[sw] : fb_read_data;
-    end else*/ begin
     case (state)
     STATE_IDLE: begin
         if (start_blit) begin
@@ -391,7 +374,7 @@ always @(posedge uclk) begin
                 dst_y <= reg_y1 <= reg_y2 ? reg_y1 : reg_y1 + op_height - 1;
                 src_x <= reg_x2 >> 3;
                 src_y <= reg_y1 <= reg_y2 ? reg_y2 : reg_y2 + op_height - 1;
-            end else led <= 8'b11001010;
+            end
         end else if (start_fill) begin
             if (reg_x1 + op_width <= WIDTH && reg_y1 + op_height <= HEIGHT) begin
                 state <= STATE_FILL;
@@ -405,8 +388,8 @@ always @(posedge uclk) begin
             state <= STATE_IDLE;
         end else begin
             fb_addr <= dst_addr;
-            if (dst_covered_bits != 8'hff && read_waits < 2) begin // (??) 1st: set addr, 2nd: read
-                read_waits <= read_waits + 1; // waiting until 2: same reason as STATE_FILL_INC_POS
+            if (dst_covered_bits != 8'hff && read_waits < 2) begin
+                read_waits <= read_waits + 1; // =0 set addr, =1 reads, =2 data ready
             end else begin
                 fb_write <= 1;
                 fb_write_data <=
@@ -420,7 +403,7 @@ always @(posedge uclk) begin
         // for some reason it can't happen in STATE_FILL...
         // it works in simulation, but not on real hardware
         // (the memory behaves in a weird way)
-        fb_addr <= dst_addr;
+        fb_addr <= dst_addr; // for some reason, memory uses address from this tick, not previous
         if ({dst_x + 17'h1, 3'b000} >= reg_x1 + op_width) begin
             dst_x <= reg_x1 >> 3;
             dst_y <= dst_y + 1;
@@ -430,24 +413,25 @@ always @(posedge uclk) begin
         state <= STATE_FILL;
     end
     STATE_BLIT: begin
-        // todo expl stages
+        // idea: for each line: read all needed bytes from current line, then write pixels in dst line
+        // this way we don't have to care about horizontal direction, and it takes same
+        // number of cycles; it requires line buffer, though
         case (blit_stage)
         BLIT_STAGE_READ: begin
             if (blit_dir == BLIT_DIR_DN ?
                 dst_y >= reg_y1 + op_height :
-                dst_y < reg_y1)
+                dst_y + 1 == reg_y1) // +1 cause dst_y could underflow
             begin // finished
                 state <= STATE_IDLE;
             end else begin
                 fb_addr <= src_addr;
-                if (read_waits < 2) begin // todo optimize?
-                    read_waits <= read_waits + 1; // todo msg
+                if (read_waits < 2) begin
+                    read_waits <= read_waits + 1;
                 end else begin
                     blit_buffer[src_x] <= fb_read_data;
 
                     // inc pos
                     if ({src_x + 17'h1, 3'b000} >= reg_x2 + op_width) begin
-                        led <= src_x;
                         src_x <= reg_x2 >> 3;
                         blit_stage <= BLIT_STAGE_WRITE;
                     end else begin
@@ -479,17 +463,14 @@ always @(posedge uclk) begin
             src_x <= reg_x2 >> 3;
             src_y <= blit_dir == BLIT_DIR_DN ? src_y + 1 : src_y - 1;
             blit_stage <= BLIT_STAGE_READ;
-            // led <= led + 16;
         end else begin
             dst_x <= dst_x + 1;
             src_x <= src_x + 1;
-            // led <= led + 1;
         end
         state <= STATE_BLIT;
     end
     default: begin end
     endcase
-    end
 end
 
 endmodule
