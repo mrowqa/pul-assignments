@@ -51,6 +51,7 @@ localparam STATE_IDLE = 0;
 localparam STATE_BLIT = 1;
 localparam STATE_FILL = 2;
 localparam STATE_FILL_INC_POS = 3;
+localparam STATE_BLIT_INC_POS = 4;
 reg [7:0] state;
 reg start_blit;
 reg start_fill;
@@ -226,9 +227,19 @@ reg EppDstb2;
 reg EppWR2;
 
 // for main logic
-reg [19:3] dst_x; // iterator
+reg [19:3] dst_x; // iterators
 reg [19:0] dst_y;
+reg [19:3] src_x;
+reg [19:0] src_y;
 reg [7:0] read_waits;
+reg blit_stage;
+reg blit_dir;
+reg [7:0] blit_buffer [0:WIDTH/8-1]; // line buffer for blit
+
+localparam BLIT_STAGE_READ = 0;
+localparam BLIT_STAGE_WRITE = 1;
+localparam BLIT_DIR_UP = 0;
+localparam BLIT_DIR_DN = 1;
 
 initial begin
     state <= STATE_IDLE;
@@ -239,6 +250,7 @@ initial begin
 end
 
 wire [19:3] dst_addr = (dst_y * WIDTH + {dst_x, 3'b000}) >> 3;
+wire [19:3] src_addr = (src_y * WIDTH + {src_x, 3'b000}) >> 3;
 wire [7:0] dst_covered_bits = {
     (({dst_x, 3'b111} >= reg_x1) && ({dst_x, 3'b111} < (reg_x1 + op_width))),
     (({dst_x, 3'b110} >= reg_x1) && ({dst_x, 3'b110} < (reg_x1 + op_width))),
@@ -249,6 +261,11 @@ wire [7:0] dst_covered_bits = {
     (({dst_x, 3'b001} >= reg_x1) && ({dst_x, 3'b001} < (reg_x1 + op_width))),
     (({dst_x, 3'b000} >= reg_x1) && ({dst_x, 3'b000} < (reg_x1 + op_width)))
     };
+wire [7:0] dst_blit_bits =
+    {src_x == WIDTH/8-1 ? 8'h00 : blit_buffer[src_x + 1], blit_buffer[src_x]} // read necessary words
+    >> (reg_x2 & 3'b111) // youngest 8 bits - the next 8 bits
+    << (reg_x1 & 3'b111) // aligned to dst
+    ;
 
 always @(posedge uclk) begin
     // sync inputs
@@ -345,12 +362,22 @@ always @(posedge uclk) begin
 
     if (btn[0]) begin
         fb_addr <= sw;
-        led <= fb_read_data;
+        led <= btn[1] ? blit_buffer[sw] : fb_read_data;
     end else begin
     case (state)
     STATE_IDLE: begin
         if (start_blit) begin
-            state <= STATE_BLIT; // todo...
+            if (reg_x1 + op_width < WIDTH && reg_y1 + op_height < HEIGHT &&
+                reg_x2 + op_width < WIDTH && reg_y2 + op_height < HEIGHT)
+            begin
+                state <= STATE_BLIT;
+                blit_stage <= BLIT_STAGE_READ;
+                blit_dir <= reg_y1 <= reg_y2 ? BLIT_DIR_DN : BLIT_DIR_UP;
+                dst_x <= reg_x1 >> 3;
+                dst_y <= reg_y1 <= reg_y2 ? reg_y1 : reg_y1 + op_height - 1;
+                src_x <= reg_x2 >> 3;
+                src_y <= reg_y1 <= reg_y2 ? reg_y2 : reg_y2 + op_height - 1;
+            end
         end else if (start_fill) begin
             if (reg_x1 + op_width < WIDTH && reg_y1 + op_height < HEIGHT) begin
                 state <= STATE_FILL;
@@ -359,19 +386,16 @@ always @(posedge uclk) begin
             end
         end
     end
-    STATE_BLIT: begin
-        state <= STATE_IDLE; // todo
-    end
     STATE_FILL: begin
         if (dst_y >= reg_y1 + op_height) begin // finished
             state <= STATE_IDLE;
         end else begin
             fb_addr <= dst_addr;
-            if (dst_covered_bits != 8'hff && read_waits < 2) begin
+            if (dst_covered_bits != 8'hff && read_waits < 2) begin // (??) 1st: set addr, 2nd: read
                 read_waits <= read_waits + 1; // waiting until 2: same reason as STATE_FILL_INC_POS
             end else begin
                 fb_write <= 1;
-                fb_write_data <= 
+                fb_write_data <=
                     ({8{fill_color}} & dst_covered_bits) |
                     (fb_read_data & (~dst_covered_bits));
                 state <= STATE_FILL_INC_POS;
@@ -386,12 +410,90 @@ always @(posedge uclk) begin
         if ({dst_x + 17'h1, 3'b000} >= reg_x1 + op_width) begin
             dst_x <= reg_x1 >> 3;
             dst_y <= dst_y + 1;
-            led <= led + 16;
         end else begin
             dst_x <= dst_x + 1;
-            led <= led + 1;
         end
         state <= STATE_FILL;
+    end
+    STATE_BLIT: begin
+        // todo expl stages
+        case (blit_stage)
+        // todo bug scenario:
+        // >>> fill(0, 0, 3*8, 3*8, 1)
+        // >>> x_axis(7)
+        // >>> x_axis(16)
+        // >>> blit(8, 8, 0+0, 3*8+0, 8, 8)
+        // >>> blit(8, 8, 0+1, 3*8+0, 8, 8)
+        // >>> blit(8, 8, 0+2, 3*8+0, 8, 8)
+        // >>> blit(8, 8, 0+3, 3*8+0, 8, 8)
+        // >>> blit(8, 8, 0+3, 3*8+0, 8, 8)
+        // >>> blit(8, 8, 0+4, 3*8+0, 8, 8)
+        // >>> blit(8, 8, 0+4, 3*8+1, 8, 8)
+        // >>> blit(8, 8, 0+4, 3*8+2, 8, 8)
+        // >>> blit(8, 8, 0+4, 3*8+3, 8, 8)
+        // >>> blit(8, 8, 0+5, 3*8+3, 8, 8)
+        // >>> blit(8, 8, 0+4, 3*8+3, 8, 8)
+        // >>> blit(8, 8, 0+5, 3*8+3, 8, 8)
+        // >>> blit(8, 8, 0+5, 3*8+3, 9, 9)
+        // >>> blit(7, 7, 0+4, 3*8+2, 10, 10)
+        // >>> blit(7, 7, 0+4, 3*8+2, 10, 10)
+        // >>> blit(8, 8, 0+5, 3*8+3, 9, 9)
+        // >>> blit(7, 7, 0+4, 3*8+2, 10, 10)
+        BLIT_STAGE_READ: begin
+            if (blit_dir == BLIT_DIR_DN ?
+                dst_y >= reg_y1 + op_height :
+                dst_y < reg_y1)
+            begin // finished
+                state <= STATE_IDLE;
+            end else begin
+                fb_addr <= src_addr;
+                if (read_waits < 2) begin // todo optimize?
+                    read_waits <= read_waits + 1; // todo msg
+                end else begin
+                    blit_buffer[src_x] <= fb_read_data;
+
+                    // inc pos
+                    if ({src_x + 17'h1, 3'b000} >= reg_x2 + op_width) begin
+                        led <= led + 16;
+                        src_x <= reg_x2 >> 3;
+                        blit_stage <= BLIT_STAGE_WRITE;
+                    end else begin
+                        led <= led + 1;
+                        src_x <= src_x + 1;
+                    end
+                end
+            end
+        end
+        BLIT_STAGE_WRITE: begin
+            fb_addr <= dst_addr;
+            if (dst_covered_bits != 8'hff && read_waits < 2) begin
+                read_waits <= read_waits + 1;
+            end else begin
+                fb_write <= 1;
+                fb_write_data <=
+                    (dst_blit_bits & dst_covered_bits) |
+                    (fb_read_data & (~dst_covered_bits));
+                state <= STATE_BLIT_INC_POS;
+            end
+        end
+        default: begin end
+        endcase
+    end
+    STATE_BLIT_INC_POS: begin
+        fb_addr <= dst_addr;
+        if ({dst_x + 17'h1, 3'b000} >= reg_x1 + op_width) begin
+            dst_x <= reg_x1 >> 3;
+            dst_y <= blit_dir == BLIT_DIR_DN ? dst_y + 1 : dst_y - 1;
+            src_x <= reg_x2 >> 3;
+            src_y <= blit_dir == BLIT_DIR_DN ? src_y + 1 : src_y - 1;
+            blit_stage <= BLIT_STAGE_READ;
+            // led <= led + 16;
+        end else begin
+            dst_x <= dst_x + 1;
+            src_x <= src_x + 1;
+            // led <= led + 1;
+        end
+        state <= STATE_BLIT;
     end
     default: begin end
     endcase

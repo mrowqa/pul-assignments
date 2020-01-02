@@ -56,7 +56,7 @@ def x_axis(y):
 def get_regs():
     print(port.get_regs(range(12)))
 
-def fill_rect(x, y, width, height, color):
+def fill(x, y, width, height, color):
     xl, xh = x % 256, x // 256
     yl, yh = y % 256, y // 256
     wl, wh = width % 256, width // 256
@@ -75,5 +75,27 @@ def rect_test(spacing):
     edge = 7
     for y in range(10):
         for x in range(10):
-            fill_rect(7 + x*(7+spacing), 7 + y*(7+spacing), 7, 7, (y+x) % 2)
-            fill_rect(7 + x*(7+spacing) + 2, 7 + y*(7+spacing) + 2, 3, 3, (y+x+1) % 2)
+            fill(7 + x*(7+spacing), 7 + y*(7+spacing), 7, 7, (y+x) % 2)
+            fill(7 + x*(7+spacing) + 2, 7 + y*(7+spacing) + 2, 3, 3, (y+x+1) % 2)
+
+def blit(dst_x, dst_y, src_x, src_y, width, height):
+    x1l, x1h = dst_x % 256, dst_x // 256
+    y1l, y1h = dst_y % 256, dst_y // 256
+    x2l, x2h = src_x % 256, src_x // 256
+    y2l, y2h = src_y % 256, src_y // 256
+    wl, wh = width % 256, width // 256
+    hl, hh = height % 256, height // 256
+    port.put_reg(X1L, bytes([x1l]))
+    port.put_reg(X1H, bytes([x1h]))
+    port.put_reg(Y1L, bytes([y1l]))
+    port.put_reg(Y1H, bytes([y1h]))
+    port.put_reg(X2L, bytes([x2l]))
+    port.put_reg(X2H, bytes([x2h]))
+    port.put_reg(Y2L, bytes([y2l]))
+    port.put_reg(Y2H, bytes([y2h]))
+    port.put_reg(WL, bytes([wl]))
+    port.put_reg(WH, bytes([wh]))
+    port.put_reg(HL, bytes([hl]))
+    port.put_reg(HH, bytes([hh]))
+    port.put_reg(BLIT, bytes([1]))
+
