@@ -6,6 +6,8 @@ from adepttool.device import get_devices
 import sys
 from time import sleep
 
+MAX_MAPS = 6
+
 def main():
     parser = argparse.ArgumentParser(description='Program the FPGA on Basys 2.')
     parser.add_argument('--device', type=int, help='Device index', default=0)
@@ -29,6 +31,9 @@ def main():
 
         # load & upload the maps
         maps = list(map(load_map, args.map_ids))
+        if len(maps) > MAX_MAPS:
+            print('ERROR: max allowed maps is {}, got {}'.format(MAX_MAPS, len(maps)))
+            sys.exit(1)
         upload_maps(port, maps)
 
 def load_map(map_id):
@@ -42,9 +47,7 @@ def upload_maps(port, maps):
     bitstream += b''.join(maps)
 
     print('bitstream: {} bytes'.format(len(bitstream)))
-    # port.put_reg(EPP_MAP_PORT, bitstream)  # TODO make it faster, again
-    for b in bitstream:
-        port.put_reg(EPP_MAP_PORT, bytes([b]))
+    port.put_reg(EPP_MAP_PORT, bitstream)
 
 if __name__ == "__main__":
     main()

@@ -15,11 +15,11 @@ NET "Led<1>" LOC = "M11" ; # Bank = 2, Signal name = LD1
 NET "Led<0>" LOC = "M5" ;  # Bank = 2, Signal name = LD0
 
 # # Pin assignment for SWs
-# NET "sw0<7>" LOC = "N3";  # Bank = 2, Signal name = SW7
-# NET "sw0<6>" LOC = "E2";  # Bank = 3, Signal name = SW6
-# NET "sw0<5>" LOC = "F3";  # Bank = 3, Signal name = SW5
-# NET "sw0<4>" LOC = "G3";  # Bank = 3, Signal name = SW4
-# NET "sw0<3>" LOC = "B4";  # Bank = 3, Signal name = SW3
+NET "sw0<7>" LOC = "N3";  # Bank = 2, Signal name = SW7
+NET "sw0<6>" LOC = "E2";  # Bank = 3, Signal name = SW6
+NET "sw0<5>" LOC = "F3";  # Bank = 3, Signal name = SW5
+NET "sw0<4>" LOC = "G3";  # Bank = 3, Signal name = SW4
+NET "sw0<3>" LOC = "B4";  # Bank = 3, Signal name = SW3
 NET "sw0<2>" LOC = "K3";  # Bank = 3, Signal name = SW2
 NET "sw0<1>" LOC = "L3";  # Bank = 3, Signal name = SW1
 NET "sw0<0>" LOC = "P11";  # Bank = 2, Signal name = SW0
