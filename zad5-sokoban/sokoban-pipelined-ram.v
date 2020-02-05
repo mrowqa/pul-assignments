@@ -1,3 +1,4 @@
+// note: dropped solution, player movement not debugged (with new delayed ram)
 `default_nettype none
 
 module sokoban(
@@ -82,97 +83,129 @@ initial begin
 end
 
 // TODO "secret room" with "daj 5! \n xd"; displays for 5 secs after lvl completion; or 0.25s after incorrect move
-// TODO: other ideas:
-// - pallete for textures
-// - better tricks for compressing maps
+// TODO get rid of multiplication
 
 // tile map
 localparam MAP_WIDTH = RESOLUTION_WIDTH / TILE_EDGE_LEN; // 20
 localparam MAP_HEIGHT = RESOLUTION_HEIGHT / TILE_EDGE_LEN; // 15
 localparam MAP_SIZE = MAP_WIDTH * MAP_HEIGHT; // 300
 localparam MAP_MEM = 2048;
-localparam MAPS_CAPACITY = MAP_MEM / MAP_SIZE * 3; // "* 3" -- compressed map
+localparam MAPS_CAPACITY = MAP_MEM / MAP_SIZE;
+
+// TODO make it fit 20 maps using 9-bit bytes
+// currently fits 6 maps (uses whole byte for values in range [0,6])
 
 // control wires for epp & the game
 // epp
-reg [10:0] epp_map_addr;
-reg epp_map_write;
-reg [2:0] epp_map_write_tile;
+reg [10:0] epp_map_addr, epp_map_addr_d1;
+reg epp_map_write, epp_map_write_d1;
+reg [2:0] epp_map_write_tile, epp_map_write_tile_d1;
 // main logic
-reg [10:0] game_map_addr;
-reg game_map_write;
-reg [2:0] game_map_write_tile;
+reg [10:0] game_map_addr, game_map_addr_d1;
+reg game_map_write, game_map_write_d1;
+reg [2:0] game_map_write_tile, game_map_write_tile_d1;
 
-wire [8:0] map_read_data;
+wire [8:0] map_read_data_d2;
 reg [2:0] map_read_tile;
-wire [8:0] vga_map_read_data;
+wire [8:0] vga_map_read_data_d2;
 reg [2:0] vga_map_read_tile;
-reg [10:0] map_addr;
-reg [10:0] vga_map_addr;
-reg [8:0] map_write_data;
-reg map_write;
+reg [10:0] map_addr_d1;
+reg [10:0] vga_map_addr, vga_map_addr_d1, vga_map_addr_remapped_d1;
+reg [8:0] map_write_data_d1;
+reg map_write_d1;
+reg [3:0] map_tile_selector_d1, map_tile_selector_d2;
+reg [3:0] vga_map_tile_selector_d1, vga_map_tile_selector_d2;
+reg [8:0] map_write_mask_d1; // "tmp var"
 
-reg epp_write_buffered, epp_next_epp_write_buffered; // fwd decl
+reg epp_write_buffered; // fwd decl
 reg [7:0] current_map; // fwd decl
 reg [7:0] current_map_d1;
 
-// thought: cm2xyz -- it's periodic, make it smaller! (uh, 3*n will never align with power of two)
-reg [10:0] current_map_to_offset [MAPS_CAPACITY-1:0];
-reg [3:0] current_map_to_tile_selector [MAPS_CAPACITY-1:0];
-wire [10:0] current_map_offset = current_map_to_offset[current_map];
-wire [3:0] current_map_tile_selector = current_map_to_tile_selector[current_map_d1];
-
-reg [8:0] map_write_mask; // tmp "var"
-
-// note: there's a pipelined ram version for even shorter critical path in other file
-// expensive is "map_addr <= *_map_addr + xyz";
-//     one could "waste" some memory to gain better timings: align maps to power of two,
-//     and simply use current_map as high bytes
-// other solution: simply do "+xyz" in every place the "*_map_addr" is set; ISE doesn't optimise it :/
+// there's assumption MAP_SIZE = 300 for compact map storage, avoiding division
+// one 9-bit byte contains three 3-bit tiles
+// because of timings, there's a need for pipeline
 always @* begin
-    // writes - assumption: target tile was read one cycle before the write (for masked write)
-    map_write_mask <= 9'b111 << (current_map_tile_selector - 2);
-    if (epp_map_write || epp_next_epp_write_buffered) begin
-        map_addr <= epp_map_addr;
-        map_write <= epp_map_write;
-        map_write_data <= ({3{epp_map_write_tile}} & map_write_mask) |
-                          (map_read_data & ~map_write_mask);
-    end else begin
-        map_addr <= game_map_addr;
-        map_write <= game_map_write;
-        map_write_data <= ({3{game_map_write_tile}} & map_write_mask) |
-                          (map_read_data & ~map_write_mask);
-    end
-    map_read_tile <= map_read_data[current_map_tile_selector -: 3];
+    // delays:
+    // 0 - just saving the values
+    // 1 - actual address calculation, read or write happens at the end of this cycle
+    // 2 - outputing read tiles
 
-    vga_map_read_tile <= vga_map_read_data[current_map_tile_selector -: 3];
+    // first port - EPP & game
+    // writes - assumption: target tile was read one cycle before the write
+    map_write_mask_d1 <= 9'b111 << (map_tile_selector_d1 - 2);
+    if (epp_map_write_d1 || epp_write_buffered) begin
+        map_addr_d1 <= (epp_map_addr_d1 >= 200 ? epp_map_addr_d1 - 200 :
+                        epp_map_addr_d1 >= 100 ? epp_map_addr_d1 - 100 :
+                        epp_map_addr_d1) + current_map_d1 * (MAP_SIZE / 3);
+        map_tile_selector_d1 <= (epp_map_addr_d1 >= 200 ? 8 :
+                                 epp_map_addr_d1 >= 100 ? 5 : 2);
+        map_write_d1 <= epp_map_write_d1;
+        // masked write, hence map_read_data_d2
+        map_write_data_d1 <= ({3{epp_map_write_tile_d1}} & map_write_mask_d1) |
+                             (map_read_data_d2 & ~map_write_mask_d1);
+    end else begin
+        map_addr_d1 <= (game_map_addr_d1 >= 200 ? game_map_addr_d1 - 200 :
+                        game_map_addr_d1 >= 100 ? game_map_addr_d1 - 100 :
+                        game_map_addr_d1) + current_map_d1 * (MAP_SIZE / 3);
+        map_tile_selector_d1 <= (game_map_addr_d1 >= 200 ? 8 :
+                                 game_map_addr_d1 >= 100 ? 5 : 2);
+        map_write_d1 <= game_map_write_d1;
+        // masked write, hence map_read_data_d2
+        map_write_data_d1 <= ({3{game_map_write_tile_d1}} & map_write_mask_d1) |
+                             (map_read_data_d2 & ~map_write_mask_d1);
+    end
+    map_read_tile <= map_read_data_d2[map_tile_selector_d2 -: 3];
+
+    // second port - VGA
+    vga_map_addr_remapped_d1 <= (vga_map_addr_d1 >= 200 ? vga_map_addr_d1 - 200 :
+                                 vga_map_addr_d1 >= 100 ? vga_map_addr_d1 - 100 :
+                                 vga_map_addr_d1) + current_map_d1 * (MAP_SIZE / 3);
+    vga_map_tile_selector_d1 <= (vga_map_addr_d1 >= 200 ? 8 :
+                                 vga_map_addr_d1 >= 100 ? 5 : 2);
+    vga_map_read_tile <= vga_map_read_data_d2[vga_map_tile_selector_d2 -: 3];
 end
 
 always @(posedge clk) begin
+    epp_map_addr_d1 <= epp_map_addr;
+    epp_map_write_d1 <= epp_map_write;
+    epp_map_write_tile_d1 <= epp_map_write_tile;
+
+    game_map_addr_d1 <= game_map_addr;
+    game_map_write_d1 <= game_map_write;
+    game_map_write_tile_d1 <= game_map_write_tile;
+
+    vga_map_addr_d1 <= vga_map_addr;
+
+    map_tile_selector_d2 <= map_tile_selector_d1;
+    vga_map_tile_selector_d2 <= vga_map_tile_selector_d1;
+
     current_map_d1 <= current_map;
 end
 
 RAMB16_S9_S9 #(
     // TODO better init...
-    .INIT_00("03_02_01_00_06_05_04_03_02_01_00_06_05_04_03_02_01_00_06_05_04_03_02_01_00_06_05_04_03_02_01_00")
+    .INIT_00("2ba25910ce85742ba25910ce85742ba25910ce85742ba25910ce85742ba25910"),
+    .INIT_01("10ce85742ba25910ce85742ba25910ce85742ba25910ce85742ba25910ce8574"),
+    .INIT_02("742ba25910ce85742ba25910ce85742ba25910ce85742ba25910ce85742ba259"),
+    .INIT_03("5910ce85742ba25910ce85742ba25910ce85742ba25910ce85742ba25910ce85")
 ) tile_map (
-    .DOA(map_read_data[7:0]), // Port A 8-bit Data Output
-    .DOB(vga_map_read_data[7:0]), // Port B 8-bit Data Output
-    .DOPA(map_read_data[8:8]), // Port A 1-bit Parity Output
-    .DOPB(vga_map_read_data[8:8]), // Port B 1-bit Parity Output
-    .ADDRA(map_addr), // Port A 11-bit Address Input
-    .ADDRB(vga_map_addr), // Port B 11-bit Address Input
+    .DOA(map_read_data_d2[7:0]), // Port A 8-bit Data Output
+    .DOB(vga_map_read_data_d2[7:0]), // Port B 8-bit Data Output
+    .DOPA(map_read_data_d2[8:8]), // Port A 1-bit Parity Output
+    .DOPB(vga_map_read_data_d2[8:8]), // Port B 1-bit Parity Output
+    .ADDRA(map_addr_d1), // Port A 11-bit Address Input
+    .ADDRB(vga_map_addr_remapped_d1), // Port B 11-bit Address Input
     .CLKA(clk), // Port A Clock
     .CLKB(clk), // Port B Clock
-    .DIA(map_write_data[7:0]), // Port A 8-bit Data Input
+    .DIA(map_write_data_d1[7:0]), // Port A 8-bit Data Input
     .DIB(0), // Port B 8-bit Data Input
-    .DIPA(map_write_data[8:8]), // Port A 1-bit parity Input
+    .DIPA(map_write_data_d1[8:8]), // Port A 1-bit parity Input
     .DIPB(0), // Port-B 1-bit parity Input
     .ENA(1), // Port A RAM Enable Input
     .ENB(1), // Port B RAM Enable Input
     .SSRA(0), // Port A Synchronous Set/Reset Input
     .SSRB(0), // Port B Synchronous Set/Reset Input
-    .WEA(map_write), // Port A Write Enable Input
+    .WEA(map_write_d1), // Port A Write Enable Input
     .WEB(0) // Port B Write Enable Input
 );
 
@@ -203,11 +236,6 @@ initial begin
         map_score[i] <= 0;
         map_remaining_boxes[i] <= 0;
     end
-
-    for (i=0; i<MAPS_CAPACITY; i=i+1) begin
-        current_map_to_offset[i] <= (i / 3) * MAP_SIZE;
-        current_map_to_tile_selector[i] <= i % 3 * 3 + 2; //0->2, 1->5, 2->8
-    end
 end
 
 //////////////////////////////////////////////////////////////////////////////
@@ -233,22 +261,22 @@ reg [9:0] map_y;
 reg [9:0] tile_x;
 reg [9:0] tile_y;
 
-reg [9:0] tile_x_d1;
-reg [9:0] tile_y_d1;
-reg [19:0] in_tile_idx_d1;
-reg [7:0] tile0_pixel_d2, tile1_pixel_d2, tile2_pixel_d2;
-reg [7:0] tile_pixel_mux_d2;
+reg [9:0] tile_x_d1, tile_x_d2;
+reg [9:0] tile_y_d1, tile_y_d2;
+reg [19:0] in_tile_idx_d2;
+reg [7:0] tile0_pixel_d3, tile1_pixel_d3, tile2_pixel_d3;
+reg [7:0] tile_pixel_mux_d3;
 
-reg is_current_tile_player_d1;
-reg [7:0] current_tile_d1, current_tile_d2;
-reg is_on_map, is_on_map_d1, is_on_map_d2;
+reg is_current_tile_player_d1, is_current_tile_player_d2;
+reg [7:0] current_tile_d1, current_tile_d2, current_tile_d3;
+reg is_on_map, is_on_map_d1, is_on_map_d2, is_on_map_d3;
 
 reg [9:0] next_screen_x;
 reg [9:0] next_screen_y;
 
-reg hsync_d0, hsync_d1, hsync_d2;
-reg vsync_d0, vsync_d1, vsync_d2;
-reg [7:0] rgb_d2;
+reg hsync_d0, hsync_d1, hsync_d2, hsync_d3;
+reg vsync_d0, vsync_d1, vsync_d2, vsync_d3;
+reg [7:0] rgb_d3;
 
 initial begin
     screen_x <= 0;
@@ -274,19 +302,19 @@ always @* begin
 
     // calc indices for sync mem read
     is_on_map = screen_x < RESOLUTION_WIDTH && screen_y < RESOLUTION_HEIGHT;
-    vga_map_addr = map_y * MAP_WIDTH + map_x + current_map_offset;
-    current_tile_d1 = is_current_tile_player_d1 ? TILE_PLAYER : vga_map_read_tile;
-    in_tile_idx_d1 = tile_y_d1 * TILE_EDGE_LEN + tile_x_d1 + current_tile_d1 * TILE_SIZE;
+    vga_map_addr = map_y * MAP_WIDTH + map_x;
+    current_tile_d2 = is_current_tile_player_d2 ? TILE_PLAYER : vga_map_read_tile;
+    in_tile_idx_d2 = tile_y_d2 * TILE_EDGE_LEN + tile_x_d2 + current_tile_d2 * TILE_SIZE;
 
     // outs
     hsync_d0 = H_FRONT_PORCH <= screen_x && screen_x < H_SYNC_PULSE ? HS_ACTIVE : ~HS_ACTIVE; // kinda xor
     vsync_d0 = V_FRONT_PORCH <= screen_y && screen_y < V_SYNC_PULSE ? VS_ACTIVE : ~VS_ACTIVE;
-    rgb_d2 = is_on_map_d2 ?
-        (current_tile_d2 == TILE_EMPTY_OUTSIDE ? TILE_EMPTY_OUTSIDE_COLOR :
-         current_tile_d2 == TILE_EMPTY_INSIDE ? TILE_EMPTY_INSIDE_COLOR :
-         (tile_pixel_mux_d2 == 0 ? tile0_pixel_d2 :
-          tile_pixel_mux_d2 == 1 ? tile1_pixel_d2 :
-          tile2_pixel_d2))
+    rgb_d3 = is_on_map_d3 ?
+        (current_tile_d3 == TILE_EMPTY_OUTSIDE ? TILE_EMPTY_OUTSIDE_COLOR :
+         current_tile_d3 == TILE_EMPTY_INSIDE ? TILE_EMPTY_INSIDE_COLOR :
+         (tile_pixel_mux_d3 == 0 ? tile0_pixel_d3 :
+          tile_pixel_mux_d3 == 1 ? tile1_pixel_d3 :
+          tile2_pixel_d3))
         : 0;
 end
 
@@ -301,25 +329,31 @@ always @(posedge clk) begin
     // helpers - delayers
     is_on_map_d1 <= is_on_map;
     is_on_map_d2 <= is_on_map_d1;
+    is_on_map_d3 <= is_on_map_d2;
     tile_x_d1 <= tile_x;
+    tile_x_d2 <= tile_x_d1;
     tile_y_d1 <= tile_y;
+    tile_y_d2 <= tile_y_d1;
     hsync_d1 <= hsync_d0;
     hsync_d2 <= hsync_d1;
+    hsync_d3 <= hsync_d2;
     vsync_d1 <= vsync_d0;
     vsync_d2 <= vsync_d1;
+    vsync_d3 <= vsync_d2;
     is_current_tile_player_d1 <= map_y * MAP_WIDTH + map_x == player_pos;
-    current_tile_d2 <= current_tile_d1;
+    is_current_tile_player_d2 <= is_current_tile_player_d1;
+    current_tile_d3 <= current_tile_d2;
 
     // mem
-    tile0_pixel_d2 <= tile_data0[in_tile_idx_d1];
-    tile1_pixel_d2 <= tile_data1[in_tile_idx_d1];
-    tile2_pixel_d2 <= tile_data2[in_tile_idx_d1];
-    tile_pixel_mux_d2 <= in_tile_idx_d1 >> 11;
+    tile0_pixel_d3 <= tile_data0[in_tile_idx_d2];
+    tile1_pixel_d3 <= tile_data1[in_tile_idx_d2];
+    tile2_pixel_d3 <= tile_data2[in_tile_idx_d2];
+    tile_pixel_mux_d3 <= in_tile_idx_d2 >> 11;
 
     // outs
-    rgb <= rgb_d2;
-    hsync <= hsync_d2;
-    vsync <= vsync_d2;
+    rgb <= rgb_d3;
+    hsync <= hsync_d3;
+    vsync <= vsync_d3;
 end
 
 //////////////////////////////////////////////////////////////////////////////
@@ -369,6 +403,7 @@ reg [7:0] epp_next_epp_data_buf;
 reg epp_next_epp_wr_buf;
 reg epp_next_EppWait;
 
+reg epp_next_epp_write_buffered;
 reg [10:0] epp_next_epp_saved_map_addr;
 reg [2:0] epp_next_epp_saved_map_write_tile;
 
@@ -452,9 +487,8 @@ localparam EPP_MAP_HEADER_SIZE = 3;
 
 always @* begin
     // mem
-    epp_map_addr <= map_addr;
+    epp_map_addr <= map_addr_d1;
     epp_map_write <= 0;
-    epp_map_write_tile <= 3'hx;
     epp_next_epp_write_buffered <= 0;
     epp_next_epp_saved_map_addr <= epp_saved_map_addr;
     epp_next_epp_saved_map_write_tile <= epp_saved_map_write_tile;
@@ -510,9 +544,9 @@ always @* begin
                             epp_next_remaining_boxes <= EppDB2;
                         end
                         default: begin
-                            epp_map_addr <= read_progress - EPP_MAP_HEADER_SIZE + current_map_offset;
+                            epp_map_addr <= read_progress - EPP_MAP_HEADER_SIZE;
                             epp_next_epp_write_buffered <= 1;
-                            epp_next_epp_saved_map_addr <= read_progress - EPP_MAP_HEADER_SIZE + current_map_offset;
+                            epp_next_epp_saved_map_addr <= read_progress - EPP_MAP_HEADER_SIZE;
                             epp_next_epp_saved_map_write_tile <= EppDB2;
                         end
                         endcase
@@ -632,7 +666,8 @@ always @(posedge clk) begin
     end
 
     // debug print (TODO move to comb.?)
-    // ... almost debug; there are leds :D
+    // ... almost debug; there are leds with score :D
+    // TODO(?) score on 7 segment display?
     case(sw)
     8'b01000000: begin
         led[1:0] <= state;
@@ -676,7 +711,7 @@ always @* begin
     score_up <= 0;
     has_next_remaining_boxes <= 0;
     next_remaining_boxes <= remaining_boxes;
-    game_map_addr <= map_addr;
+    game_map_addr <= map_addr_d1;
     game_map_write <= 0;
     game_map_write_tile <= 3'hx;
 
@@ -688,7 +723,7 @@ always @* begin
         end else if (btn == BTN_MV_UP || btn == BTN_MV_DOWN
                 || btn == BTN_MV_LEFT || btn == BTN_MV_RIGHT) begin
             has_next_state <= 1;
-            next_state <= STATE_PLAYER_MOVE_READ_AHEAD;
+            next_state <= STATE_PLAYER_MOVE_FETCH_AHEAD_X2;
             has_next_pos_ahead <= 1;
             case (btn)
             BTN_MV_UP: begin
@@ -708,13 +743,17 @@ always @* begin
                 next_pos_ahead_x2 <= player_pos + 2;
             end
             endcase
-            game_map_addr <= next_pos_ahead + current_map_offset;
+            game_map_addr <= next_pos_ahead;
         end
+    end
+    STATE_PLAYER_MOVE_FETCH_AHEAD_X2: begin
+        game_map_addr <= pos_ahead_x2;
+        has_next_state <= 1;
+        next_state <= STATE_PLAYER_MOVE_READ_AHEAD;
     end
     STATE_PLAYER_MOVE_READ_AHEAD: begin
         has_next_tile_ahead <= 1;
         next_tile_ahead <= map_read_tile;
-        game_map_addr <= pos_ahead_x2 + current_map_offset;
         has_next_state <= 1;
         next_state <= STATE_PLAYER_MOVE_READ_AHEAD_X2;
     end
@@ -743,7 +782,7 @@ always @* begin
             next_remaining_boxes <=
                 remaining_boxes - (tile_ahead_x2 == TILE_TARGET) + (tile_ahead == TILE_BOX_READY);
 
-            game_map_addr <= pos_ahead + current_map_offset; // fetch for masked write
+            game_map_addr <= pos_ahead; // fetch for masked write
 
             has_next_state <= 1;
             next_state <= STATE_PLAYER_MOVE_WRITE_AHEAD;
@@ -755,7 +794,7 @@ always @* begin
         end
     end
     STATE_PLAYER_MOVE_WRITE_AHEAD: begin
-        game_map_addr <= pos_ahead + current_map_offset;
+        game_map_addr <= pos_ahead;
         game_map_write <= 1;
         game_map_write_tile <= (tile_ahead == TILE_BOX_READY ? TILE_TARGET : TILE_EMPTY_INSIDE);
 
@@ -763,30 +802,18 @@ always @* begin
         next_state <= STATE_PLAYER_MOVE_WRITE_AHEAD_X2_FETCH;
     end
     STATE_PLAYER_MOVE_WRITE_AHEAD_X2_FETCH: begin
-        game_map_addr <= pos_ahead_x2 + current_map_offset;
+        game_map_addr <= pos_ahead_x2;
 
         has_next_state <= 1;
         next_state <= STATE_PLAYER_MOVE_WRITE_AHEAD_X2;
     end
     STATE_PLAYER_MOVE_WRITE_AHEAD_X2: begin
-        game_map_addr <= pos_ahead_x2 + current_map_offset;
+        game_map_addr <= pos_ahead_x2;
         game_map_write <= 1;
         game_map_write_tile <= (tile_ahead_x2 == TILE_TARGET ? TILE_BOX_READY : TILE_BOX);
         if (remaining_boxes == 0 && current_map + 1 < MAPS_CAPACITY) begin
             has_next_current_map <= 1;
             next_current_map <= current_map + 1;
-        end
-
-        has_next_state <= 1;
-        next_state <= STATE_WAIT_BTNS_RELEASED;
-    end
-    STATE_PLAYER_MOVE_WRITE_AHEAD: begin
-        game_map_addr <= pos_ahead_x2 + current_map_offset;
-        game_map_write <= 1;
-        game_map_write_tile <= (tile_ahead_x2 == TILE_TARGET ? TILE_BOX_READY : TILE_BOX);
-        if (remaining_boxes == 0 && current_map + 1 < MAPS_CAPACITY) begin
-            has_next_current_map <= 1;
-            next_current_map <= current_map + 1; // TODO what if finished all maps?
         end
 
         has_next_state <= 1;

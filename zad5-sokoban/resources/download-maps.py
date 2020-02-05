@@ -25,7 +25,7 @@ def handle_mid(mid):
     # add padding
     w, h = len(desc[0]), len(desc)
     if w > WIDTH or h > HEIGHT:
-        print("{}> ERROR: map of size {}x{} doesn't fit into {}x{}", mid, w, h, WIDTH, HEIGHT)
+        print("{}> ERROR: map of size {}x{} doesn't fit into {}x{}".format(mid, w, h, WIDTH, HEIGHT))
         return
 
     while len(desc) < HEIGHT:

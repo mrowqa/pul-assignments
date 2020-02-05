@@ -6,7 +6,7 @@ from adepttool.device import get_devices
 import sys
 from time import sleep
 
-MAX_MAPS = 6
+MAX_MAPS = 18
 
 def main():
     parser = argparse.ArgumentParser(description='Program the FPGA on Basys 2.')
