@@ -125,6 +125,7 @@ wire [3:0] current_map_tile_selector = current_map_to_tile_selector[current_map_
 
 reg [8:0] map_write_mask; // tmp "var"
 
+// (notes below might be outdated, but shows work progress)
 // note: there's a pipelined ram version for even shorter critical path in other file
 // expensive is "map_addr <= *_map_addr + xyz";
 //     one could "waste" some memory to gain better timings: align maps to power of two,

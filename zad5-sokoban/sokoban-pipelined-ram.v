@@ -1,4 +1,3 @@
-// note: dropped solution, player movement not debugged (with new delayed ram)
 `default_nettype none
 
 module sokoban(
@@ -90,7 +89,7 @@ localparam MAP_WIDTH = RESOLUTION_WIDTH / TILE_EDGE_LEN; // 20
 localparam MAP_HEIGHT = RESOLUTION_HEIGHT / TILE_EDGE_LEN; // 15
 localparam MAP_SIZE = MAP_WIDTH * MAP_HEIGHT; // 300
 localparam MAP_MEM = 2048;
-localparam MAPS_CAPACITY = MAP_MEM / MAP_SIZE;
+localparam MAPS_CAPACITY = MAP_MEM * 3 / MAP_SIZE; // "* 3" because of compression
 
 // TODO make it fit 20 maps using 9-bit bytes
 // currently fits 6 maps (uses whole byte for values in range [0,6])
