@@ -85,6 +85,7 @@ end
 // TODO: other ideas:
 // - pallete for textures
 // - better tricks for compressing maps
+// - MULT18x18SIO - could get rid of it ("currently" 3 reported as used, though only 2 should be used...)
 
 // tile map
 localparam MAP_WIDTH = RESOLUTION_WIDTH / TILE_EDGE_LEN; // 20
@@ -400,6 +401,7 @@ localparam BTN_MV_DOWN  = 4'b0100;
 localparam BTN_MV_LEFT  = 4'b1000;
 
 reg [7:0] state;
+reg [7:0] next_led;
 
 reg [9:0] pos_ahead;
 reg [9:0] pos_ahead_x2;
@@ -631,31 +633,7 @@ always @(posedge clk) begin
         map_remaining_boxes[current_map] <= next_remaining_boxes;
     end
 
-    // debug print (TODO move to comb.?)
-    // ... almost debug; there are leds :D
-    case(sw)
-    8'b01000000: begin
-        led[1:0] <= state;
-        led[4:2] <= current_map;
-        led[6:5] <= number_of_maps;
-    end
-    8'b01100000: begin
-        led[3:0] <= tile_ahead;
-        led[7:4] <= tile_ahead_x2;
-    end
-    8'b01010000: begin
-        led <= pos_ahead;
-    end
-    8'b01110000: begin
-        led <= pos_ahead_x2;
-    end
-    8'b01001000: begin
-        led <= remaining_boxes;
-    end
-    default: begin
-        led <= score;
-    end
-    endcase
+    led <= next_led;
 end
 
 always @* begin
@@ -801,6 +779,31 @@ always @* begin
     STATE_READING_MAPS: begin
     end
     default: begin end
+    endcase
+
+    // LEDs
+    next_led <= score;
+
+    // debug prints
+    case(sw)
+    8'b01000000: begin
+        next_led[1:0] <= state;
+        next_led[4:2] <= current_map;
+        next_led[7:5] <= number_of_maps;
+    end
+    8'b01100000: begin
+        next_led[3:0] <= tile_ahead;
+        next_led[7:4] <= tile_ahead_x2;
+    end
+    8'b01010000: begin
+        next_led <= pos_ahead;
+    end
+    8'b01110000: begin
+        next_led <= pos_ahead_x2;
+    end
+    8'b01001000: begin
+        next_led <= remaining_boxes;
+    end
     endcase
 end
 
